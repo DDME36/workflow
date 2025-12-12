@@ -49,12 +49,14 @@ jobs:
       - name: Upload logs (if any)
         uses: actions/upload-artifact@v4
         if: always()
+        continue-on-error: true  # Don't fail if no files found
         with:
           name: daily-check-logs
           path: |
             *.log
             charts/*.png
           retention-days: 7
+          if-no-files-found: ignore  # Ignore if no log files
 
   # Weekly model retrain (optional)
   weekly-retrain:

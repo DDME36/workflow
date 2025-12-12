@@ -400,10 +400,13 @@ def send_discord_alert_with_chart(
     spx_price: float = None,
     vix: float = None,
     rsi: float = None,
-    additional_info: dict = None
+    additional_info: dict = None,
+    market_regime: str = None,
+    fear_forecast: dict = None
 ):
     """
     ส่ง Alert พร้อมรูปกราฟไป Discord
+    รวม Market Regime และ Fear Forecast
     """
     if not config.DISCORD_WEBHOOK_URL:
         print("Discord Webhook URL not configured!")
@@ -414,56 +417,118 @@ def send_discord_alert_with_chart(
     if data is not None and MATPLOTLIB_AVAILABLE:
         chart_buf = generate_signal_chart(data, signal_type)
     
-    # Build embed (same as before)
+    # Build embed based on signal type
     if signal_type == 'EXTREME':
         color = 0xFF0000
-        title = "🚨 EXTREME FEAR ALERT"
+        title = "🚨 EXTREME FEAR - BUY ALERT"
         desc = "ตลาดกลัวสุดขีด! นี่คือโอกาสที่หายากมาก"
+        action_emoji = "🟢"
+        action_text = "BUY"
     elif signal_type == 'BUY_SIGNAL':
         color = 0x00FF00
         title = "💰 BUY SIGNAL"
         desc = "โมเดลแนะนำให้พิจารณาเข้าซื้อ"
+        action_emoji = "🟢"
+        action_text = "BUY"
+    elif signal_type == 'WATCH':
+        color = 0xFFA500
+        title = "👀 WATCH ZONE"
+        desc = "Fear ต่ำ - จับตามองใกล้ชิด"
+        action_emoji = "🟡"
+        action_text = "WATCH"
     elif signal_type == 'EXTREME_SELL':
         color = 0x8B0000
         title = "🔴 EXTREME GREED - SELL ALERT"
         desc = "ตลาดโลภสุดขีด! พิจารณาขายทำกำไร"
+        action_emoji = "🔴"
+        action_text = "SELL"
     elif signal_type == 'SELL_SIGNAL':
         color = 0xFF4500
         title = "📉 SELL SIGNAL"
         desc = "โมเดลแนะนำให้พิจารณาขาย/ทำกำไร"
+        action_emoji = "🔴"
+        action_text = "SELL"
+    elif signal_type == 'SELL_WATCH':
+        color = 0xFFD700
+        title = "⚠️ GREED WATCH ZONE"
+        desc = "Greed สูง - จับตามองใกล้ชิด"
+        action_emoji = "🟠"
+        action_text = "WATCH (SELL)"
     else:
         color = 0x0099FF
         title = "📊 Market Update"
         desc = "อัพเดทสถานะตลาด"
+        action_emoji = "⚪"
+        action_text = "HOLD"
     
-    # Fear bar
-    if fear_index < 25:
-        fear_bar = "🔴🔴🔴🔴🔴 FEAR"
-    elif fear_index < 50:
+    # Fear level indicator
+    if fear_index < 10:
+        fear_bar = "🔴🔴🔴🔴🔴 EXTREME FEAR"
+    elif fear_index < 25:
+        fear_bar = "🟠🟠🟠🟠⚪ HIGH FEAR"
+    elif fear_index < 45:
         fear_bar = "🟡🟡🟡⚪⚪ NEUTRAL"
     elif fear_index < 75:
         fear_bar = "🟢🟢🟢⚪⚪ GREED"
     else:
         fear_bar = "🟢🟢🟢🟢🟢 EXTREME GREED"
     
+    # Market Regime indicator
+    if market_regime:
+        regime_text = market_regime
+    elif additional_info and 'Price vs SMA200' in str(additional_info):
+        regime_text = "🐂 BULL" if float(str(additional_info.get('Price vs SMA200', '0')).replace('%', '').replace('+', '')) > 0 else "🐻 BEAR"
+    else:
+        # Calculate from data if available
+        if data is not None and len(data) > 0:
+            latest = data.iloc[-1]
+            close = latest['Close']
+            sma200 = latest.get('SMA_200', close)
+            regime_text = "🐂 BULL" if close > sma200 else "🐻 BEAR"
+        else:
+            regime_text = "N/A"
+    
     embed = {
         "title": title,
         "description": desc,
         "color": color,
         "fields": [
+            # Row 1: Signal + Regime + Action
             {
-                "name": "Fear & Greed",
-                "value": f"```{fear_bar}\n{fear_index:.0f}/100```",
+                "name": "📊 Signal",
+                "value": f"```{action_emoji} {action_text}```",
                 "inline": True
             },
             {
-                "name": "Confidence",
+                "name": "📈 Market Regime",
+                "value": f"```{regime_text}```",
+                "inline": True
+            },
+            {
+                "name": "🎯 Confidence",
                 "value": f"```{probability*100:.0f}%```",
                 "inline": True
             },
+            # Row 2: Fear & Greed
             {
-                "name": "S&P 500",
+                "name": "━━━━━ FEAR & GREED ━━━━━",
+                "value": f"```{fear_bar}\n        {fear_index:.0f} / 100```",
+                "inline": False
+            },
+            # Row 3: Market Data
+            {
+                "name": "💹 S&P 500",
                 "value": f"```${spx_price:,.0f}```" if spx_price else "```N/A```",
+                "inline": True
+            },
+            {
+                "name": "😱 VIX",
+                "value": f"```{vix:.1f}```" if vix else "```N/A```",
+                "inline": True
+            },
+            {
+                "name": "📊 RSI",
+                "value": f"```{rsi:.0f}```" if rsi else "```N/A```",
                 "inline": True
             },
         ],
@@ -472,21 +537,63 @@ def send_discord_alert_with_chart(
         }
     }
     
+    # Add Fear Forecast (5 days)
+    if fear_forecast:
+        forecast_text = f"""```
+📅 5-DAY FORECAST:
+Current:     {fear_forecast.get('current', fear_index):.0f}
+Predicted:   {fear_forecast.get('predicted_min', 'N/A')}
+Direction:   {fear_forecast.get('direction', 'N/A')}
+Probability: {fear_forecast.get('prob_drop', 0)*100:.0f}% จะลงแรง
+```"""
+        embed["fields"].append({
+            "name": "🔮 Fear Forecast",
+            "value": forecast_text,
+            "inline": False
+        })
+    
     # Add Exit Rules for BUY signals
     if signal_type in ['EXTREME', 'BUY_SIGNAL']:
         exit_rules = """```
-📤 EXIT RULES:
-🛑 Stop: ขาดทุน > 4% → ขายทันที
-⏰ 3 วันไม่กำไร > 1% → ขายทิ้ง
-🎯 RSI > 70 หรือ Fear > 70 → ขาย
-📈 กำไร > 3% → Stop ที่ทุน
-⏳ ถือไม่เกิน 10 วัน
+📤 EXIT RULES (หลังซื้อ):
+🛑 Stop Loss: ขาดทุน > 4% → ขายทันที
+⏰ Stagnation: 3 วันไม่กำไร > 1% → ขายทิ้ง
+🎯 Take Profit: RSI > 70 หรือ Fear > 70 → ขาย
+📈 Trailing: กำไร > 3% → Stop ที่ทุน
+⏳ Max Hold: ถือไม่เกิน 10 วัน
 ```"""
         embed["fields"].append({
             "name": "📤 Exit Strategy",
             "value": exit_rules,
             "inline": False
         })
+    
+    # Add Entry Rules for SELL signals
+    if signal_type in ['EXTREME_SELL', 'SELL_SIGNAL']:
+        sell_rules = """```
+📤 SELL RULES:
+🔴 ขายทำกำไร 50-100% ของ Position
+🟡 เก็บ Cash รอจังหวะซื้อกลับ
+⏳ รอ Fear ลงต่ำกว่า 30 ค่อยซื้อใหม่
+```"""
+        embed["fields"].append({
+            "name": "📤 Sell Strategy",
+            "value": sell_rules,
+            "inline": False
+        })
+    
+    # Add additional info if provided
+    if additional_info:
+        # Filter important info only
+        important_keys = ['Days to FOMC', 'Days to CPI', 'Drawdown', 'Circuit Breaker']
+        filtered_info = {k: v for k, v in additional_info.items() if any(key in k for key in important_keys)}
+        if filtered_info:
+            info_text = "\n".join([f"• {k}: {v}" for k, v in filtered_info.items()])
+            embed["fields"].append({
+                "name": "📋 Risk Info",
+                "value": f"```{info_text}```",
+                "inline": False
+            })
     
     if chart_buf:
         embed["image"] = {"url": "attachment://chart.png"}

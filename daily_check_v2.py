@@ -300,7 +300,20 @@ def check_today_v2():
         print(f"\n📊 Normal market conditions (Fear: {fear_index:.1f})")
         print("No alert needed.")
     
-    # 7. Send Alert (with chart!)
+    # 7. Get Fear Forecast first (for Discord alert)
+    fear_forecast_data = None
+    fear_pred = FearPredictor()
+    if fear_pred.load():
+        forecast = fear_pred.predict(data)
+        # Prepare forecast data for Discord
+        fear_forecast_data = {
+            'current': forecast['current_fear'],
+            'predicted_min': forecast['predicted_min_5d'],
+            'direction': '📉 ลดลง' if forecast['fear_momentum'] < -2 else '📈 เพิ่มขึ้น' if forecast['fear_momentum'] > 2 else '➡️ ทรงตัว',
+            'prob_drop': forecast['prob_significant_drop']
+        }
+    
+    # 8. Send Alert (with chart!)
     if signal_type and signal_type != 'INFO':
         # Skip signal if major event tomorrow (optional)
         if event_warning and signal_type in ['WATCH', 'SELL_WATCH']:
@@ -319,15 +332,13 @@ def check_today_v2():
                     spx_price=spx_price,
                     vix=vix,
                     rsi=rsi,
+                    market_regime=regime_name,  # NEW: ส่ง Market Regime
+                    fear_forecast=fear_forecast_data,  # NEW: ส่ง Fear Forecast
                     additional_info={
                         "Drawdown": f"{drawdown:.1f}%",
-                        "Crash Warning": "YES" if crash_warning else "NO",
-                        "Recovery Signal": "YES" if recovery_signal else "NO",
-                        "Top Warning": "YES" if top_warning else "NO",
                         "Days to FOMC": str(days_to_fomc),
                         "Days to CPI": str(days_to_cpi),
-                        "Data Source": "Synthetic 7-Factor",
-                        "Model Version": "V2 (Buy + Sell)"
+                        "Circuit Breaker": circuit_reason if not circuit_safe else "OFF"
                     }
                 )
             except Exception as e:
@@ -342,28 +353,23 @@ def check_today_v2():
                     rsi=rsi,
                     additional_info={
                         "Drawdown": f"{drawdown:.1f}%",
-                        "Crash Warning": "YES" if crash_warning else "NO",
-                        "Recovery Signal": "YES" if recovery_signal else "NO",
-                        "Top Warning": "YES" if top_warning else "NO",
                         "Days to FOMC": str(days_to_fomc),
                         "Days to CPI": str(days_to_cpi),
-                        "Model Version": "V2 (Buy + Sell)"
+                        "Market Regime": regime_name
                     }
                 )
             alert_sent = True
     
-    # 8. Fear Forecast
+    # 9. Print Fear Forecast (already calculated above)
     print(f"\n{'=' * 70}")
     print("FEAR FORECAST (Next 5 Days)")
     print(f"{'=' * 70}")
     
-    fear_pred = FearPredictor()
-    if fear_pred.load():
-        forecast = fear_pred.predict(data)
+    if fear_forecast_data:
         forecast_msg = fear_pred.get_forecast_message(forecast)
         print(forecast_msg)
         
-        # Send forecast alert if fear might drop to interesting levels
+        # Send separate forecast alert if fear might drop to interesting levels
         if forecast['predicted_min_5d'] < 20 or forecast['prob_significant_drop'] > 0.6:
             send_fear_forecast(
                 current_fear=forecast['current_fear'],
