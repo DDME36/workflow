@@ -38,32 +38,37 @@ def calculate_market_momentum(spx_data):
     """
     1. Market Momentum: S&P 500 vs 125-day moving average
     Score 0-100: ถ้าราคาสูงกว่า MA125 มาก = Greed, ต่ำกว่า = Fear
+    CNN uses: Price vs 125-day MA, normalized
     """
     ma_125 = spx_data['Close'].rolling(125).mean()
     pct_diff = (spx_data['Close'] - ma_125) / ma_125 * 100
     
-    # Normalize to 0-100 scale
-    # -8% or below = 0 (Extreme Fear), +8% or above = 100 (Extreme Greed)
-    score = 50 + (pct_diff / 8) * 50
+    # Normalize to 0-100 scale (CNN-like)
+    # -10% = 0 (Extreme Fear), +10% = 100 (Extreme Greed)
+    # ปรับให้ sensitive มากขึ้น
+    score = 50 + (pct_diff / 10) * 50
     score = score.clip(0, 100)
     return score
 
 
 def calculate_stock_price_strength(spx_data):
     """
-    2. Stock Price Strength: New Highs vs New Lows
-    ใช้ proxy: % of days making new 52-week high vs low
+    2. Stock Price Strength: Distance from 52-week high
+    CNN uses: % stocks at 52-week highs vs lows
+    เราใช้ proxy: ราคาห่างจาก 52-week high เท่าไหร่
     """
     high_52w = spx_data['High'].rolling(252).max()
     low_52w = spx_data['Low'].rolling(252).min()
     
-    # Distance from 52w high/low
-    dist_from_high = (spx_data['Close'] - high_52w) / high_52w
-    dist_from_low = (spx_data['Close'] - low_52w) / low_52w
+    # Distance from 52w high (negative = below high)
+    pct_from_high = (spx_data['Close'] - high_52w) / high_52w * 100
     
-    # Score: near high = greed, near low = fear
-    # Normalize: at 52w high = 100, at 52w low = 0
-    score = (dist_from_low / (dist_from_low - dist_from_high + 0.001)) * 100
+    # CNN-like scoring:
+    # At 52w high (0%) = 75 (Greed, not extreme)
+    # -5% from high = 50 (Neutral)
+    # -15% from high = 0 (Extreme Fear)
+    # Above 52w high = max 100
+    score = 75 + (pct_from_high / 5) * 25  # +5% = 100, -15% = 0
     score = score.clip(0, 100)
     return score
 
@@ -71,11 +76,24 @@ def calculate_stock_price_strength(spx_data):
 def calculate_market_volatility(vix_data):
     """
     3. Market Volatility: VIX level
-    VIX < 12 = Extreme Greed (100), VIX > 35 = Extreme Fear (0)
+    CNN uses: VIX vs 50-day MA
+    VIX < 12 = Greed (but not extreme), VIX > 30 = Fear
     """
-    # Inverse relationship: high VIX = fear
-    score = 100 - ((vix_data - 12) / (35 - 12)) * 100
-    score = score.clip(0, 100)
+    # VIX 50-day moving average comparison
+    vix_ma50 = vix_data.rolling(50, min_periods=10).mean()
+    vix_ratio = vix_data / vix_ma50.fillna(vix_data)
+    
+    # Also consider absolute VIX level
+    # VIX 12 = 80, VIX 20 = 50, VIX 30 = 20, VIX 40 = 0
+    abs_score = 100 - ((vix_data - 12) / (30 - 12)) * 80
+    abs_score = abs_score.clip(0, 100)
+    
+    # Ratio score: VIX below MA = greed, above MA = fear
+    ratio_score = 100 - ((vix_ratio - 0.8) / (1.3 - 0.8)) * 100
+    ratio_score = ratio_score.clip(0, 100)
+    
+    # Combine: 60% absolute, 40% relative
+    score = abs_score * 0.6 + ratio_score * 0.4
     return score
 
 
@@ -149,15 +167,18 @@ def calculate_put_call_ratio(vix_data):
 def calculate_market_breadth(spx_data):
     """
     7. Market Breadth: ใช้ price momentum เป็น proxy
-    ถ้าราคาขึ้นต่อเนื่อง = breadth ดี = greed
+    CNN uses: McClellan Volume Summation Index
+    เราใช้ proxy: % วันที่ราคาขึ้นใน 20 วัน
     """
-    # Rolling positive days ratio
     returns = spx_data['Close'].pct_change()
-    positive_days = (returns > 0).rolling(20).sum() / 20 * 100
     
-    # Normalize: 30% positive = 0, 70% positive = 100
-    score = (positive_days - 30) / (70 - 30) * 100
-    score = score.clip(0, 100)
+    # Rolling positive days ratio (20 days)
+    positive_days = (returns > 0).rolling(20, min_periods=5).sum() / 20 * 100
+    
+    # Normalize: 35% positive = 0, 65% positive = 100
+    score = (positive_days - 35) / (65 - 35) * 100
+    score = score.clip(0, 100).fillna(50)
+    
     return score
 
 
@@ -216,15 +237,16 @@ def calculate_synthetic_fear_greed(start_date=None, end_date=None):
     # 7. Market Breadth (weight: 5%)
     components['breadth'] = calculate_market_breadth(spx)
     
-    # Weighted average (เหมือน CNN)
+    # Weighted average (ปรับให้ใกล้เคียง CNN มากขึ้น)
+    # CNN ให้น้ำหนัก VIX และ Momentum มากกว่า
     weights = {
-        'momentum': 0.25,
-        'strength': 0.25,
-        'volatility': 0.15,
+        'momentum': 0.20,      # ลดลงเล็กน้อย
+        'strength': 0.15,      # ลดลง (proxy ไม่แม่น)
+        'volatility': 0.25,    # เพิ่ม (VIX สำคัญมาก)
         'safe_haven': 0.10,
         'junk_bond': 0.10,
         'put_call': 0.10,
-        'breadth': 0.05
+        'breadth': 0.10        # เพิ่มเล็กน้อย
     }
     
     components['synthetic_score'] = sum(
@@ -233,7 +255,15 @@ def calculate_synthetic_fear_greed(start_date=None, end_date=None):
     )
     
     # Smooth with 3-day MA to reduce noise
-    components['score'] = components['synthetic_score'].rolling(3).mean()
+    components['score'] = components['synthetic_score'].rolling(3, min_periods=1).mean()
+    
+    # Apply mean reversion toward 50 (CNN tends to stay near center more)
+    # ถ้าค่าสูงมากหรือต่ำมาก ให้ดึงกลับมาหา 50
+    # CNN rarely goes above 80 or below 20 except in extreme cases
+    components['score'] = components['score'] * 0.70 + 50 * 0.30
+    
+    # Fill any remaining NaN with forward fill
+    components['score'] = components['score'].ffill().bfill()
     
     print(f"Synthetic Fear & Greed calculated: {len(components)} days")
     print(f"Current Synthetic Score: {components['score'].iloc[-1]:.1f}")
@@ -241,14 +271,47 @@ def calculate_synthetic_fear_greed(start_date=None, end_date=None):
     return components[['score']].dropna()
 
 
+def get_cnn_fear_greed():
+    """
+    ดึง Fear & Greed จาก CNN โดยตรง (ถ้าได้)
+    """
+    try:
+        # CNN Fear & Greed API endpoint
+        url = "https://production.dataviz.cnn.io/index/fearandgreed/graphdata"
+        headers = {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+        }
+        response = requests.get(url, headers=headers, timeout=10)
+        if response.status_code == 200:
+            data = response.json()
+            if 'fear_and_greed' in data:
+                score = data['fear_and_greed']['score']
+                rating = data['fear_and_greed']['rating']
+                return {'score': float(score), 'rating': rating, 'source': 'cnn_direct'}
+    except Exception as e:
+        print(f"CNN API failed: {e}")
+    return None
+
+
 def get_current_fear_greed():
     """
     ดึง Fear & Greed ล่าสุด
-    Priority: 1. Synthetic (แม่นที่สุด) 2. VIX estimate
+    Priority: 1. CNN Direct 2. Synthetic 3. VIX estimate
     """
     try:
-        # Method 1: Calculate Synthetic Fear & Greed (BEST!)
-        # ใช้ข้อมูล 1 ปีล่าสุดเพื่อคำนวณ
+        # Method 1: Try CNN Direct first (most accurate!)
+        cnn_data = get_cnn_fear_greed()
+        if cnn_data:
+            print(f"✅ Using CNN Fear & Greed: {cnn_data['score']:.0f}")
+            return {
+                'score': cnn_data['score'],
+                'rating': cnn_data['rating'],
+                'date': datetime.now(),
+                'source': 'cnn_direct'
+            }
+        
+        # Method 2: Calculate Synthetic Fear & Greed
+        print("CNN API unavailable, calculating Synthetic...")
         end_date = datetime.now().strftime('%Y-%m-%d')
         start_date = (datetime.now() - timedelta(days=400)).strftime('%Y-%m-%d')
         
@@ -265,7 +328,7 @@ def get_current_fear_greed():
                     'source': 'synthetic_7_factors'
                 }
         
-        # Method 2: Fallback to VIX estimate
+        # Method 3: Fallback to VIX estimate
         vix = yf.download(config.VIX_TICKER, period='5d', progress=False)
         if not vix.empty:
             if isinstance(vix.columns, pd.MultiIndex):
