@@ -1,0 +1,91 @@
+# GitHub Actions Workflow สำหรับ Fear & Greed Alert System
+# รันทุกวัน ตี 5 เวลาไทย (22:00 UTC วันก่อนหน้า)
+
+name: Daily Fear & Greed Check
+
+on:
+  schedule:
+    # รันทุกวัน 22:00 UTC = 05:00 เวลาไทย
+    # ตลาดสหรัฐปิด 16:00 EST = 04:00 เวลาไทย (วันถัดไป)
+    - cron: '0 22 * * 1-5'  # จันทร์-ศุกร์ เท่านั้น
+  
+  # สามารถรัน manual ได้
+  workflow_dispatch:
+    inputs:
+      force_alert:
+        description: 'Force send alert even if no signal'
+        required: false
+        default: 'false'
+        type: boolean
+
+env:
+  DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
+
+jobs:
+  daily-check:
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+      
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+      
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+      
+      - name: Run Daily Check
+        run: |
+          python daily_check_v2.py
+        env:
+          DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
+      
+      - name: Upload logs (if any)
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: daily-check-logs
+          path: |
+            *.log
+            charts/*.png
+          retention-days: 7
+
+  # Weekly model retrain (optional)
+  weekly-retrain:
+    runs-on: ubuntu-latest
+    if: github.event.schedule == '0 22 * * 0'  # Sunday only
+    
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+      
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+      
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+      
+      - name: Retrain Model
+        run: |
+          python train_v2.py
+      
+      - name: Commit updated models
+        run: |
+          git config --local user.email "action@github.com"
+          git config --local user.name "GitHub Action"
+          git add models/
+          git diff --staged --quiet || git commit -m "Auto-update models [skip ci]"
+          git push
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
